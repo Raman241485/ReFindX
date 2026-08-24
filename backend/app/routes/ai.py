@@ -18,8 +18,7 @@ from app.models.ai_match import AIMatch
 from app.utils.dependencies import get_current_user
 
 from app.services.ai_match import (
-    get_image_embedding,
-    calculate_similarity,
+    compare_images,
 )
 
 
@@ -110,7 +109,7 @@ def match_item(
     ),
 ):
     """
-    Run CLIP image matching for an item.
+    Run AI image matching for an item.
 
     Allowed:
         - Item owner
@@ -120,6 +119,9 @@ def match_item(
         - Opposite item type
         - Admin verified items
         - Active items
+
+    AI comparison:
+        - Gemini Vision
     """
 
     # ========================================================
@@ -133,7 +135,6 @@ def match_item(
         )
         .first()
     )
-
 
     if not item:
 
@@ -151,12 +152,10 @@ def match_item(
         current_user.role == "admin"
     )
 
-
     is_owner = (
         item.user_id ==
         current_user.id
     )
-
 
     if not is_admin and not is_owner:
 
@@ -262,29 +261,6 @@ def match_item(
 
 
     # ========================================================
-    # CURRENT IMAGE EMBEDDING
-    # ========================================================
-
-    try:
-
-        current_embedding = (
-            get_image_embedding(
-                current_image_path
-            )
-        )
-
-    except Exception as error:
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not process current image: "
-                f"{error}"
-            ),
-        )
-
-
-    # ========================================================
     # COMPARE AGAINST CANDIDATES
     # ========================================================
 
@@ -292,6 +268,10 @@ def match_item(
 
 
     for candidate in candidates:
+
+        # ----------------------------------------------------
+        # Candidate image check
+        # ----------------------------------------------------
 
         if not candidate.image_url:
             continue
@@ -313,20 +293,29 @@ def match_item(
             continue
 
 
+        # ----------------------------------------------------
+        # Gemini image comparison
+        # ----------------------------------------------------
+
         try:
 
-            candidate_embedding = (
-                get_image_embedding(
-                    candidate_path
+            result = compare_images(
+                current_image_path,
+                candidate_path,
+            )
+
+
+            similarity = float(
+                result.get(
+                    "similarity_score",
+                    0,
                 )
             )
 
 
-            similarity = (
-                calculate_similarity(
-                    current_embedding,
-                    candidate_embedding,
-                )
+            match_reason = result.get(
+                "reason",
+                "Gemini detected visual similarity.",
             )
 
 
@@ -341,9 +330,9 @@ def match_item(
             continue
 
 
-        # ====================================================
-        # MATCH THRESHOLD
-        # ====================================================
+        # ----------------------------------------------------
+        # Match threshold
+        # ----------------------------------------------------
 
         if (
             similarity >=
@@ -354,6 +343,7 @@ def match_item(
                 (
                     candidate,
                     similarity,
+                    match_reason,
                 )
             )
 
@@ -380,7 +370,11 @@ def match_item(
     response_matches = []
 
 
-    for candidate, similarity in matches:
+    for (
+        candidate,
+        similarity,
+        match_reason,
+    ) in matches:
 
         # ----------------------------------------------------
         # CHECK EXISTING MATCH
@@ -406,6 +400,7 @@ def match_item(
         if not existing_match:
 
             new_match = AIMatch(
+
                 item_id=
                     item.id,
 
@@ -418,10 +413,8 @@ def match_item(
                 status=
                     "notified",
 
-                match_reason=(
-                    "CLIP detected a potential "
-                    "image similarity."
-                ),
+                match_reason=
+                    match_reason,
             )
 
 
@@ -436,11 +429,11 @@ def match_item(
 
             db.add(
                 Notification(
+
                     user_id=
                         item.user_id,
 
-                    # IMPORTANT:
-                    # Open the matched candidate item
+                    # Open matched candidate item
                     item_id=
                         candidate.id,
 
@@ -469,11 +462,11 @@ def match_item(
 
                 db.add(
                     Notification(
+
                         user_id=
                             candidate.user_id,
 
-                        # IMPORTANT:
-                        # Open the original/current item
+                        # Open original/current item
                         item_id=
                             item.id,
 
@@ -522,6 +515,9 @@ def match_item(
                         similarity * 100,
                         2,
                     ),
+
+                "match_reason":
+                    match_reason,
             }
         )
 

@@ -1,184 +1,341 @@
 import os
+import json
+import mimetypes
 
-import torch
-
-from PIL import Image
-
-from transformers import (
-    CLIPModel,
-    CLIPProcessor,
-)
+from google import genai
+from google.genai import types
 
 
 # ============================================================
-# CLIP MODEL
+# GEMINI AI
 # ============================================================
 
-MODEL_NAME = "openai/clip-vit-base-patch32"
+MODEL_NAME = "gemini-3-flash-preview"
 
-processor = None
-model = None
+client = None
 
 
-def load_clip_model():
-    """
-    Load CLIP model only when AI matching is actually used.
-    This prevents the model from loading during server startup.
-    """
+def get_client():
+    global client
 
-    global processor
-    global model
+    if client is None:
 
-    if processor is None or model is None:
-
-        print("🤖 Loading CLIP model...")
-
-        processor = CLIPProcessor.from_pretrained(
-            MODEL_NAME
+        api_key = os.getenv(
+            "GEMINI_API_KEY"
         )
 
-        model = CLIPModel.from_pretrained(
-            MODEL_NAME
+        if not api_key:
+
+            raise RuntimeError(
+                "GEMINI_API_KEY environment variable "
+                "is not configured."
+            )
+
+        client = genai.Client(
+            api_key=api_key
         )
 
-        model.eval()
-
-        print("✅ CLIP model loaded.")
-
-    return processor, model
+    return client
 
 
 # ============================================================
-# IMAGE EMBEDDING
+# IMAGE MIME TYPE
 # ============================================================
 
-def get_image_embedding(
+def get_mime_type(
     image_path: str,
 ):
-    """
-    Convert an image into a normalized
-    CLIP image embedding.
-    """
 
-    if not os.path.exists(image_path):
-
-        raise FileNotFoundError(
-            f"Image not found: {image_path}"
-        )
-
-
-    # Load model only when required
-    clip_processor, clip_model = (
-        load_clip_model()
-    )
-
-
-    image = Image.open(
+    mime_type, _ = mimetypes.guess_type(
         image_path
-    ).convert("RGB")
-
-
-    inputs = clip_processor(
-        images=image,
-        return_tensors="pt",
     )
 
+    if not mime_type:
 
-    with torch.no_grad():
+        mime_type = "image/jpeg"
 
-        output = clip_model.get_image_features(
-            **inputs
-        )
-
-
-    # --------------------------------------------------------
-    # Transformers compatibility
-    # --------------------------------------------------------
-
-    if hasattr(
-        output,
-        "image_embeds"
-    ):
-
-        image_features = (
-            output.image_embeds
-        )
-
-
-    elif hasattr(
-        output,
-        "pooler_output"
-    ):
-
-        image_features = (
-            output.pooler_output
-        )
-
-
-    elif torch.is_tensor(
-        output
-    ):
-
-        image_features = output
-
-
-    elif isinstance(
-        output,
-        tuple
-    ):
-
-        image_features = output[0]
-
-
-    else:
-
-        raise TypeError(
-            "Unsupported CLIP output type: "
-            f"{type(output)}"
-        )
-
-
-    # --------------------------------------------------------
-    # Normalize embedding
-    # --------------------------------------------------------
-
-    image_features = (
-        image_features
-        / image_features.norm(
-            p=2,
-            dim=-1,
-            keepdim=True,
-        ).clamp(
-            min=1e-12
-        )
-    )
-
-
-    return image_features
+    return mime_type
 
 
 # ============================================================
-# COSINE SIMILARITY
+# COMPARE TWO IMAGES
 # ============================================================
 
-def calculate_similarity(
-    embedding1,
-    embedding2,
+def compare_images(
+    image1_path: str,
+    image2_path: str,
 ):
     """
-    Calculate cosine similarity between
-    two normalized CLIP embeddings.
+    Compare two lost/found item images using Gemini.
+
+    Returns:
+
+    {
+        "similarity_score": 0.87,
+        "reason": "Both images show..."
+    }
     """
 
-    similarity = (
-        torch.nn.functional.cosine_similarity(
-            embedding1,
-            embedding2,
-            dim=-1,
+    # ========================================================
+    # CHECK IMAGE 1
+    # ========================================================
+
+    if not os.path.exists(
+        image1_path
+    ):
+
+        raise FileNotFoundError(
+            f"Image not found: {image1_path}"
+        )
+
+
+    # ========================================================
+    # CHECK IMAGE 2
+    # ========================================================
+
+    if not os.path.exists(
+        image2_path
+    ):
+
+        raise FileNotFoundError(
+            f"Image not found: {image2_path}"
+        )
+
+
+    # ========================================================
+    # READ IMAGE 1
+    # ========================================================
+
+    with open(
+        image1_path,
+        "rb",
+    ) as file:
+
+        image1_bytes = file.read()
+
+
+    # ========================================================
+    # READ IMAGE 2
+    # ========================================================
+
+    with open(
+        image2_path,
+        "rb",
+    ) as file:
+
+        image2_bytes = file.read()
+
+
+    # ========================================================
+    # CREATE GEMINI IMAGE PARTS
+    # ========================================================
+
+    image1 = types.Part.from_bytes(
+
+        data=image1_bytes,
+
+        mime_type=get_mime_type(
+            image1_path
+        ),
+    )
+
+
+    image2 = types.Part.from_bytes(
+
+        data=image2_bytes,
+
+        mime_type=get_mime_type(
+            image2_path
+        ),
+    )
+
+
+    # ========================================================
+    # AI PROMPT
+    # ========================================================
+
+    prompt = """
+You are an AI lost-and-found image matching system.
+
+Compare Image 1 and Image 2.
+
+Determine whether they could represent the SAME
+physical item.
+
+Consider:
+
+- object type
+- color
+- shape
+- size
+- visible design
+- logos
+- text
+- scratches
+- unique marks
+- patterns
+- accessories
+- other identifying visual features
+
+IMPORTANT:
+
+Do not assume two items are the same just because
+they belong to the same category.
+
+Look for specific visual evidence.
+
+Give a similarity score from 0 to 1.
+
+Return ONLY valid JSON.
+
+Required format:
+
+{
+  "similarity_score": 0.00,
+  "reason": "short explanation"
+}
+
+Score meaning:
+
+0.00 = completely different
+0.50 = uncertain
+0.80 = strong possible match
+0.90 = very strong possible match
+1.00 = extremely strong match
+"""
+
+
+    # ========================================================
+    # GEMINI REQUEST
+    # ========================================================
+
+    response = get_client().models.generate_content(
+
+        model=MODEL_NAME,
+
+        contents=[
+            prompt,
+            image1,
+            image2,
+        ],
+
+        config=types.GenerateContentConfig(
+
+            temperature=0,
+
+            max_output_tokens=200,
+
+        ),
+    )
+
+
+    # ========================================================
+    # RESPONSE TEXT
+    # ========================================================
+
+    if not response.text:
+
+        raise RuntimeError(
+            "Gemini returned an empty response."
+        )
+
+
+    text = response.text.strip()
+
+
+    # ========================================================
+    # REMOVE MARKDOWN CODE FENCES
+    # ========================================================
+
+    if text.startswith("```"):
+
+        text = (
+            text
+            .replace(
+                "```json",
+                "",
+            )
+            .replace(
+                "```",
+                "",
+            )
+            .strip()
+        )
+
+
+    # ========================================================
+    # PARSE JSON
+    # ========================================================
+
+    try:
+
+        result = json.loads(
+            text
+        )
+
+    except json.JSONDecodeError:
+
+        raise RuntimeError(
+            "Gemini returned invalid JSON: "
+            + text
+        )
+
+
+    # ========================================================
+    # GET SCORE
+    # ========================================================
+
+    try:
+
+        score = float(
+            result.get(
+                "similarity_score",
+                0,
+            )
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        score = 0.0
+
+
+    # ========================================================
+    # KEEP SCORE BETWEEN 0 AND 1
+    # ========================================================
+
+    score = max(
+        0.0,
+        min(
+            1.0,
+            score,
+        ),
+    )
+
+
+    # ========================================================
+    # GET REASON
+    # ========================================================
+
+    reason = str(
+        result.get(
+            "reason",
+            "Visual similarity detected.",
         )
     )
 
 
-    return float(
-        similarity.item()
-    )
+    # ========================================================
+    # RETURN RESULT
+    # ========================================================
+
+    return {
+
+        "similarity_score":
+            score,
+
+        "reason":
+            reason,
+    }
