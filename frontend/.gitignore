@@ -1,0 +1,50 @@
+# =========================
+# Python / FastAPI Backend
+# =========================
+
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Python cache / testing
+.pytest_cache/
+.mypy_cache/
+
+# Local backend uploads
+backend/uploads/
+
+# Logs
+*.log
+
+# =========================
+# Frontend / Node
+# =========================
+
+node_modules/
+frontend/node_modules/
+
+dist/
+dist-ssr/
+*.local
+
+# =========================
+# Editor
+# =========================
+
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
