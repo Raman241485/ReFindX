@@ -16,16 +16,36 @@ from transformers import (
 
 MODEL_NAME = "openai/clip-vit-base-patch32"
 
+processor = None
+model = None
 
-processor = CLIPProcessor.from_pretrained(
-    MODEL_NAME
-)
 
-model = CLIPModel.from_pretrained(
-    MODEL_NAME
-)
+def load_clip_model():
+    """
+    Load CLIP model only when AI matching is actually used.
+    This prevents the model from loading during server startup.
+    """
 
-model.eval()
+    global processor
+    global model
+
+    if processor is None or model is None:
+
+        print("🤖 Loading CLIP model...")
+
+        processor = CLIPProcessor.from_pretrained(
+            MODEL_NAME
+        )
+
+        model = CLIPModel.from_pretrained(
+            MODEL_NAME
+        )
+
+        model.eval()
+
+        print("✅ CLIP model loaded.")
+
+    return processor, model
 
 
 # ============================================================
@@ -41,50 +61,74 @@ def get_image_embedding(
     """
 
     if not os.path.exists(image_path):
+
         raise FileNotFoundError(
             f"Image not found: {image_path}"
         )
+
+
+    # Load model only when required
+    clip_processor, clip_model = (
+        load_clip_model()
+    )
+
 
     image = Image.open(
         image_path
     ).convert("RGB")
 
-    inputs = processor(
+
+    inputs = clip_processor(
         images=image,
         return_tensors="pt",
     )
 
+
     with torch.no_grad():
 
-        output = model.get_image_features(
+        output = clip_model.get_image_features(
             **inputs
         )
+
 
     # --------------------------------------------------------
     # Transformers compatibility
     # --------------------------------------------------------
-    # Newer transformers versions may return
-    # BaseModelOutputWithPooling instead of a Tensor.
-    #
-    # The actual CLIP embedding is available through
-    # .pooler_output in that output.
-    # --------------------------------------------------------
 
-    if hasattr(output, "image_embeds"):
+    if hasattr(
+        output,
+        "image_embeds"
+    ):
 
-        image_features = output.image_embeds
+        image_features = (
+            output.image_embeds
+        )
 
-    elif hasattr(output, "pooler_output"):
 
-        image_features = output.pooler_output
+    elif hasattr(
+        output,
+        "pooler_output"
+    ):
 
-    elif torch.is_tensor(output):
+        image_features = (
+            output.pooler_output
+        )
+
+
+    elif torch.is_tensor(
+        output
+    ):
 
         image_features = output
 
-    elif isinstance(output, tuple):
+
+    elif isinstance(
+        output,
+        tuple
+    ):
 
         image_features = output[0]
+
 
     else:
 
@@ -92,6 +136,7 @@ def get_image_embedding(
             "Unsupported CLIP output type: "
             f"{type(output)}"
         )
+
 
     # --------------------------------------------------------
     # Normalize embedding
@@ -103,8 +148,11 @@ def get_image_embedding(
             p=2,
             dim=-1,
             keepdim=True,
-        ).clamp(min=1e-12)
+        ).clamp(
+            min=1e-12
+        )
     )
+
 
     return image_features
 
@@ -122,11 +170,14 @@ def calculate_similarity(
     two normalized CLIP embeddings.
     """
 
-    similarity = torch.nn.functional.cosine_similarity(
-        embedding1,
-        embedding2,
-        dim=-1,
+    similarity = (
+        torch.nn.functional.cosine_similarity(
+            embedding1,
+            embedding2,
+            dim=-1,
+        )
     )
+
 
     return float(
         similarity.item()
