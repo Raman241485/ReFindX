@@ -19,6 +19,8 @@ from app.schemas.user import (
     TokenResponse,
     UserResponse,
     SignupResponse,
+    VerifyEmailRequest,
+    ResendOTPRequest,
 )
 
 from app.utils.security import (
@@ -32,6 +34,7 @@ from app.utils.dependencies import (
 )
 
 from app.services.email_service import (
+    send_email_otp,
     send_password_reset_email,
 )
 
@@ -54,6 +57,13 @@ password_reset_tokens = {}
 
 
 # ============================================================
+# OTP SETTINGS
+# ============================================================
+
+OTP_EXPIRY_MINUTES = 5
+
+
+# ============================================================
 # SIGNUP
 # ============================================================
 
@@ -61,7 +71,7 @@ password_reset_tokens = {}
     "/signup",
     response_model=SignupResponse,
 )
-def signup(
+async def signup(
     user_data: UserSignup,
     db: Session = Depends(get_db),
 ):
@@ -97,16 +107,27 @@ def signup(
 
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Password must be 72 bytes or less."
-            ),
+            detail="Password must be 72 bytes or less.",
         )
+
+    # --------------------------------------------------------
+    # GENERATE OTP
+    # --------------------------------------------------------
+
+    otp_code = str(
+        secrets.randbelow(900000) + 100000
+    )
+
+    otp_expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            minutes=OTP_EXPIRY_MINUTES
+        )
+    )
 
     # --------------------------------------------------------
     # CREATE USER
     # --------------------------------------------------------
-    # Email verification completely removed.
-    # New users are automatically verified.
 
     new_user = User(
 
@@ -120,11 +141,13 @@ def signup(
 
         role="user",
 
-        email_verified=True,
+        # IMPORTANT:
+        # User is NOT verified until OTP is correct.
+        email_verified=False,
 
-        otp_code=None,
+        otp_code=otp_code,
 
-        otp_expires_at=None,
+        otp_expires_at=otp_expires_at,
 
     )
 
@@ -135,6 +158,36 @@ def signup(
     db.refresh(new_user)
 
     # --------------------------------------------------------
+    # SEND OTP EMAIL
+    # --------------------------------------------------------
+
+    try:
+
+        await send_email_otp(
+            receiver_email=new_user.email,
+            otp_code=otp_code,
+        )
+
+    except Exception as error:
+
+        # Remove user if email could not be sent.
+        db.delete(new_user)
+        db.commit()
+
+        print(
+            "SIGNUP OTP EMAIL ERROR:",
+            str(error),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not send verification email. "
+                "Please try again."
+            ),
+        )
+
+    # --------------------------------------------------------
     # SIGNUP SUCCESS
     # --------------------------------------------------------
 
@@ -142,12 +195,250 @@ def signup(
 
         "message": (
             "Account created successfully. "
-            "You can now login."
+            "Please verify your email using the OTP "
+            "sent to your email address."
         ),
 
         "email": new_user.email,
 
-        "requires_verification": False,
+        "requires_verification": True,
+
+    }
+
+
+# ============================================================
+# VERIFY EMAIL OTP
+# ============================================================
+
+@router.post(
+    "/verify-email",
+)
+def verify_email(
+    verify_data: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+):
+
+    email = verify_data.email.strip().lower()
+
+    otp = verify_data.otp.strip()
+
+    # --------------------------------------------------------
+    # FIND USER
+    # --------------------------------------------------------
+
+    user = (
+        db.query(User)
+        .filter(
+            User.email == email
+        )
+        .first()
+    )
+
+    if not user:
+
+        raise HTTPException(
+            status_code=404,
+            detail="User not found.",
+        )
+
+    # --------------------------------------------------------
+    # ALREADY VERIFIED
+    # --------------------------------------------------------
+
+    if user.email_verified:
+
+        return {
+            "message": "Email is already verified.",
+            "email_verified": True,
+        }
+
+    # --------------------------------------------------------
+    # CHECK OTP EXISTS
+    # --------------------------------------------------------
+
+    if not user.otp_code:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No verification OTP found. "
+                "Please request a new OTP."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # CHECK OTP
+    # --------------------------------------------------------
+
+    if otp != user.otp_code:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid OTP.",
+        )
+
+    # --------------------------------------------------------
+    # CHECK OTP EXPIRY
+    # --------------------------------------------------------
+
+    if not user.otp_expires_at:
+
+        raise HTTPException(
+            status_code=400,
+            detail="OTP has expired. Please request a new OTP.",
+        )
+
+    expires_at = user.otp_expires_at
+
+    # Handle timezone-safe comparison.
+    if expires_at.tzinfo is None:
+
+        expires_at = expires_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    if datetime.now(timezone.utc) > expires_at:
+
+        # Clear expired OTP.
+        user.otp_code = None
+        user.otp_expires_at = None
+
+        db.commit()
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "OTP has expired. "
+                "Please request a new OTP."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # VERIFY EMAIL
+    # --------------------------------------------------------
+
+    user.email_verified = True
+
+    # OTP can only be used once.
+    user.otp_code = None
+    user.otp_expires_at = None
+
+    db.commit()
+
+    db.refresh(user)
+
+    return {
+
+        "message": (
+            "Email verified successfully. "
+            "You can now login."
+        ),
+
+        "email_verified": True,
+
+    }
+
+
+# ============================================================
+# RESEND OTP
+# ============================================================
+
+@router.post(
+    "/resend-otp",
+)
+async def resend_otp(
+    resend_data: ResendOTPRequest,
+    db: Session = Depends(get_db),
+):
+
+    email = resend_data.email.strip().lower()
+
+    # --------------------------------------------------------
+    # FIND USER
+    # --------------------------------------------------------
+
+    user = (
+        db.query(User)
+        .filter(
+            User.email == email
+        )
+        .first()
+    )
+
+    if not user:
+
+        raise HTTPException(
+            status_code=404,
+            detail="User not found.",
+        )
+
+    # --------------------------------------------------------
+    # ALREADY VERIFIED
+    # --------------------------------------------------------
+
+    if user.email_verified:
+
+        return {
+            "message": "Email is already verified.",
+            "email_verified": True,
+        }
+
+    # --------------------------------------------------------
+    # GENERATE NEW OTP
+    # --------------------------------------------------------
+
+    otp_code = str(
+        secrets.randbelow(900000) + 100000
+    )
+
+    otp_expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            minutes=OTP_EXPIRY_MINUTES
+        )
+    )
+
+    user.otp_code = otp_code
+    user.otp_expires_at = otp_expires_at
+
+    db.commit()
+
+    # --------------------------------------------------------
+    # SEND NEW OTP
+    # --------------------------------------------------------
+
+    try:
+
+        await send_email_otp(
+            receiver_email=user.email,
+            otp_code=otp_code,
+        )
+
+    except Exception as error:
+
+        print(
+            "RESEND OTP EMAIL ERROR:",
+            str(error),
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Could not send OTP email. "
+                "Please try again."
+            ),
+        )
+
+    return {
+
+        "message": (
+            "A new verification OTP has been "
+            "sent to your email."
+        ),
+
+        "email": user.email,
+
+        "email_verified": False,
 
     }
 
@@ -201,9 +492,18 @@ def login(
         )
 
     # --------------------------------------------------------
-    # EMAIL VERIFICATION CHECK REMOVED
+    # EMAIL VERIFICATION REQUIRED
     # --------------------------------------------------------
-    # User can login directly after signup.
+
+    if not user.email_verified:
+
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Please verify your email before "
+                "logging in."
+            ),
+        )
 
     # --------------------------------------------------------
     # CREATE JWT
