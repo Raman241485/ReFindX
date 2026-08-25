@@ -1,9 +1,12 @@
 import os
 import json
 import mimetypes
+import re
 
 from google import genai
 from google.genai import types
+
+from pydantic import BaseModel
 
 
 # ============================================================
@@ -15,7 +18,23 @@ MODEL_NAME = "gemini-3-flash-preview"
 client = None
 
 
+# ============================================================
+# STRUCTURED RESPONSE MODEL
+# ============================================================
+
+class ImageMatchResult(BaseModel):
+
+    similarity_score: float
+
+    reason: str
+
+
+# ============================================================
+# GET GEMINI CLIENT
+# ============================================================
+
 def get_client():
+
     global client
 
     if client is None:
@@ -58,6 +77,257 @@ def get_mime_type(
 
 
 # ============================================================
+# EXTRACT JSON FROM RESPONSE
+# ============================================================
+
+def extract_json(
+    text: str,
+):
+
+    if not text:
+
+        raise ValueError(
+            "Gemini returned an empty response."
+        )
+
+
+    text = text.strip()
+
+
+    # --------------------------------------------------------
+    # Remove markdown fences
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text,
+    ).strip()
+
+
+    # --------------------------------------------------------
+    # Direct JSON
+    # --------------------------------------------------------
+
+    try:
+
+        return json.loads(
+            text
+        )
+
+    except json.JSONDecodeError:
+
+        pass
+
+
+    # --------------------------------------------------------
+    # Find first JSON object
+    # --------------------------------------------------------
+
+    start = text.find(
+        "{"
+    )
+
+    end = text.rfind(
+        "}"
+    )
+
+
+    if (
+        start != -1
+        and end != -1
+        and end > start
+    ):
+
+        json_text = text[
+            start:end + 1
+        ]
+
+        try:
+
+            return json.loads(
+                json_text
+            )
+
+        except json.JSONDecodeError:
+
+            pass
+
+
+    raise ValueError(
+        "Gemini returned invalid JSON: "
+        + repr(text)
+    )
+
+
+# ============================================================
+# GEMINI COMPARISON REQUEST
+# ============================================================
+
+def request_match(
+    image1,
+    image2,
+):
+
+    prompt = """
+Compare Image 1 and Image 2 for a lost-and-found
+item matching system.
+
+Determine whether they could be the SAME physical item.
+
+Consider:
+
+- object type
+- color
+- shape
+- visible design
+- logos
+- text
+- scratches
+- unique marks
+- patterns
+- accessories
+- other identifying visual features
+
+Do NOT consider two items a match merely because
+they belong to the same category.
+
+Look for specific visual evidence.
+
+Return:
+
+similarity_score:
+A number between 0.0 and 1.0.
+
+reason:
+A short explanation of the visual evidence.
+
+IMPORTANT:
+Return ONLY the JSON object.
+Do not write:
+"Here is the JSON"
+Do not use markdown.
+Do not use ```json.
+The first character of your response must be {.
+
+Example:
+
+{
+  "similarity_score": 0.87,
+  "reason": "Both images show the same blue backpack with the same front logo and zipper pattern."
+}
+"""
+
+
+    response = (
+        get_client()
+        .models
+        .generate_content(
+
+            model=MODEL_NAME,
+
+            contents=[
+                prompt,
+                image1,
+                image2,
+            ],
+
+            config=types.GenerateContentConfig(
+
+                temperature=0,
+
+                max_output_tokens=500,
+
+                response_mime_type=(
+                    "application/json"
+                ),
+
+                response_schema=(
+                    ImageMatchResult
+                ),
+            ),
+        )
+    )
+
+
+    # ========================================================
+    # TRY STRUCTURED PARSED RESPONSE
+    # ========================================================
+
+    parsed = getattr(
+        response,
+        "parsed",
+        None,
+    )
+
+
+    if parsed:
+
+        if isinstance(
+            parsed,
+            ImageMatchResult,
+        ):
+
+            return {
+
+                "similarity_score":
+                    parsed.similarity_score,
+
+                "reason":
+                    parsed.reason,
+            }
+
+
+        if isinstance(
+            parsed,
+            dict,
+        ):
+
+            return parsed
+
+
+    # ========================================================
+    # TEXT RESPONSE
+    # ========================================================
+
+    text = (
+        getattr(
+            response,
+            "text",
+            None,
+        )
+        or ""
+    ).strip()
+
+
+    # ========================================================
+    # PARSE JSON
+    # ========================================================
+
+    try:
+
+        return extract_json(
+            text
+        )
+
+    except ValueError as error:
+
+        print(
+            "GEMINI FIRST RESPONSE:",
+            repr(text),
+        )
+
+        raise error
+
+
+# ============================================================
 # COMPARE TWO IMAGES
 # ============================================================
 
@@ -66,13 +336,13 @@ def compare_images(
     image2_path: str,
 ):
     """
-    Compare two lost/found item images using Gemini.
+    Compare two lost/found item images.
 
     Returns:
 
     {
         "similarity_score": 0.87,
-        "reason": "Both images show..."
+        "reason": "..."
     }
     """
 
@@ -127,7 +397,7 @@ def compare_images(
 
 
     # ========================================================
-    # CREATE GEMINI IMAGE PARTS
+    # CREATE IMAGE PARTS
     # ========================================================
 
     image1 = types.Part.from_bytes(
@@ -151,134 +421,113 @@ def compare_images(
 
 
     # ========================================================
-    # AI PROMPT
-    # ========================================================
-
-    prompt = """
-You are an AI lost-and-found image matching system.
-
-Compare Image 1 and Image 2.
-
-Determine whether they could represent the SAME
-physical item.
-
-Consider:
-
-- object type
-- color
-- shape
-- size
-- visible design
-- logos
-- text
-- scratches
-- unique marks
-- patterns
-- accessories
-- other identifying visual features
-
-IMPORTANT:
-
-Do not assume two items are the same just because
-they belong to the same category.
-
-Look for specific visual evidence.
-
-Give a similarity score from 0 to 1.
-
-Return ONLY valid JSON.
-
-Required format:
-
-{
-  "similarity_score": 0.00,
-  "reason": "short explanation"
-}
-
-Score meaning:
-
-0.00 = completely different
-0.50 = uncertain
-0.80 = strong possible match
-0.90 = very strong possible match
-1.00 = extremely strong match
-"""
-
-
-    # ========================================================
-    # GEMINI REQUEST
-    # ========================================================
-
-    response = get_client().models.generate_content(
-
-        model=MODEL_NAME,
-
-        contents=[
-            prompt,
-            image1,
-            image2,
-        ],
-
-        config=types.GenerateContentConfig(
-
-            temperature=0,
-
-            max_output_tokens=200,
-
-        ),
-    )
-
-
-    # ========================================================
-    # RESPONSE TEXT
-    # ========================================================
-
-    if not response.text:
-
-        raise RuntimeError(
-            "Gemini returned an empty response."
-        )
-
-
-    text = response.text.strip()
-
-
-    # ========================================================
-    # REMOVE MARKDOWN CODE FENCES
-    # ========================================================
-
-    if text.startswith("```"):
-
-        text = (
-            text
-            .replace(
-                "```json",
-                "",
-            )
-            .replace(
-                "```",
-                "",
-            )
-            .strip()
-        )
-
-
-    # ========================================================
-    # PARSE JSON
+    # REQUEST
     # ========================================================
 
     try:
 
-        result = json.loads(
-            text
+        result = request_match(
+            image1,
+            image2,
         )
 
-    except json.JSONDecodeError:
 
-        raise RuntimeError(
-            "Gemini returned invalid JSON: "
-            + text
+    except Exception as first_error:
+
+        # ====================================================
+        # RETRY ON BAD MODEL OUTPUT
+        # ====================================================
+
+        print(
+            "AI MATCH FIRST ATTEMPT FAILED:",
+            first_error,
         )
+
+        retry_prompt = """
+You are comparing two images for a lost-and-found
+application.
+
+Return ONLY one valid JSON object.
+
+The JSON MUST have exactly these fields:
+
+{
+  "similarity_score": 0.0,
+  "reason": "short explanation"
+}
+
+Rules:
+
+- similarity_score must be a number from 0.0 to 1.0
+- reason must be a short string
+- Do not add any other fields
+- Do not add markdown
+- Do not add ```json
+- Do not write any introduction
+- Start the response directly with {
+"""
+
+
+        retry_response = (
+            get_client()
+            .models
+            .generate_content(
+
+                model=MODEL_NAME,
+
+                contents=[
+                    retry_prompt,
+                    image1,
+                    image2,
+                ],
+
+                config=types.GenerateContentConfig(
+
+                    temperature=0,
+
+                    max_output_tokens=500,
+
+                    response_mime_type=(
+                        "application/json"
+                    ),
+
+                    response_schema=(
+                        ImageMatchResult
+                    ),
+                ),
+            )
+        )
+
+
+        retry_text = (
+            getattr(
+                retry_response,
+                "text",
+                None,
+            )
+            or ""
+        ).strip()
+
+
+        print(
+            "GEMINI RETRY RESPONSE:",
+            repr(retry_text),
+        )
+
+
+        try:
+
+            result = extract_json(
+                retry_text
+            )
+
+        except Exception as retry_error:
+
+            raise RuntimeError(
+                "Gemini returned invalid JSON "
+                "after retry: "
+                + repr(retry_text)
+            ) from retry_error
 
 
     # ========================================================
@@ -303,7 +552,7 @@ Score meaning:
 
 
     # ========================================================
-    # KEEP SCORE BETWEEN 0 AND 1
+    # CLAMP SCORE
     # ========================================================
 
     score = max(
@@ -324,11 +573,18 @@ Score meaning:
             "reason",
             "Visual similarity detected.",
         )
-    )
+    ).strip()
+
+
+    if not reason:
+
+        reason = (
+            "Visual similarity detected."
+        )
 
 
     # ========================================================
-    # RETURN RESULT
+    # FINAL RESULT
     # ========================================================
 
     return {

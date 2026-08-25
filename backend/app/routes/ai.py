@@ -1,4 +1,7 @@
 import os
+import tempfile
+from urllib.request import urlopen
+from urllib.parse import urlparse
 
 from fastapi import (
     APIRouter,
@@ -42,52 +45,202 @@ MAX_MATCHES = 5
 
 
 # ============================================================
-# IMAGE UPLOAD PATH
+# DOWNLOAD CLOUDINARY IMAGE TEMPORARILY
 # ============================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(
-            os.path.abspath(__file__)
-        )
-    )
-)
-
-
-UPLOAD_DIR = os.path.join(
-    BASE_DIR,
-    "uploads",
-)
-
-
-# ============================================================
-# GET IMAGE PATH
-# ============================================================
-
-def get_image_path(
+def download_image(
     image_url: str,
 ):
     """
-    Convert:
+    Download an image from Cloudinary or another
+    HTTP/HTTPS image URL into a temporary file.
 
-        /uploads/file.jpg
-
-    into:
-
-        backend/uploads/file.jpg
+    Returns:
+        temporary file path
     """
 
     if not image_url:
         return None
 
-    filename = os.path.basename(
-        image_url
+    parsed = urlparse(image_url)
+
+    if parsed.scheme not in [
+        "http",
+        "https",
+    ]:
+
+        raise ValueError(
+            "Invalid image URL."
+        )
+
+    # --------------------------------------------------------
+    # Determine extension
+    # --------------------------------------------------------
+
+    extension = os.path.splitext(
+        parsed.path
+    )[1].lower()
+
+    if extension not in [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    ]:
+
+        extension = ".jpg"
+
+    # --------------------------------------------------------
+    # Create temporary file
+    # --------------------------------------------------------
+
+    temp_file = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=extension,
     )
 
-    return os.path.join(
-        UPLOAD_DIR,
-        filename,
-    )
+    temp_path = temp_file.name
+
+    temp_file.close()
+
+    # --------------------------------------------------------
+    # Download
+    # --------------------------------------------------------
+
+    try:
+
+        with urlopen(
+            image_url,
+            timeout=30,
+        ) as response:
+
+            image_data = response.read()
+
+        with open(
+            temp_path,
+            "wb",
+        ) as file:
+
+            file.write(
+                image_data
+            )
+
+        return temp_path
+
+    except Exception:
+
+        if os.path.exists(
+            temp_path
+        ):
+
+            os.remove(
+                temp_path
+            )
+
+        raise
+
+
+# ============================================================
+# GET IMAGE FOR AI
+# ============================================================
+
+def get_ai_image_path(
+    image_url: str,
+):
+    """
+    Supports:
+
+    1. Cloudinary HTTPS URL
+    2. Existing local /uploads/... URL
+
+    Cloudinary images are downloaded temporarily.
+    """
+
+    if not image_url:
+        return None
+
+    # --------------------------------------------------------
+    # Cloudinary / HTTPS image
+    # --------------------------------------------------------
+
+    if image_url.startswith(
+        "http://"
+    ) or image_url.startswith(
+        "https://"
+    ):
+
+        return download_image(
+            image_url
+        )
+
+    # --------------------------------------------------------
+    # Legacy local image support
+    # --------------------------------------------------------
+
+    if image_url.startswith(
+        "/uploads/"
+    ):
+
+        filename = os.path.basename(
+            image_url
+        )
+
+        backend_dir = os.path.dirname(
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.abspath(
+                        __file__
+                    )
+                )
+            )
+        )
+
+        local_path = os.path.join(
+            backend_dir,
+            "uploads",
+            filename,
+        )
+
+        if os.path.exists(
+            local_path
+        ):
+
+            return local_path
+
+    return None
+
+
+# ============================================================
+# DELETE TEMPORARY FILE
+# ============================================================
+
+def cleanup_temp_file(
+    file_path: str,
+):
+    """
+    Delete temporary Cloudinary download.
+    Never raises an exception.
+    """
+
+    if not file_path:
+        return
+
+    try:
+
+        if os.path.exists(
+            file_path
+        ):
+
+            os.remove(
+                file_path
+            )
+
+    except Exception as error:
+
+        print(
+            "Temporary image cleanup error:",
+            error,
+        )
 
 
 # ============================================================
@@ -98,6 +251,7 @@ def get_image_path(
     "/match/{item_id}"
 )
 def match_item(
+
     item_id: int,
 
     current_user: User = Depends(
@@ -111,17 +265,16 @@ def match_item(
     """
     Run AI image matching for an item.
 
+    Supports Cloudinary images.
+
     Allowed:
         - Item owner
         - Admin
 
-    Matching is performed against:
+    Matching:
         - Opposite item type
-        - Admin verified items
+        - Admin verified
         - Active items
-
-    AI comparison:
-        - Gemini Vision
     """
 
     # ========================================================
@@ -182,301 +335,341 @@ def match_item(
         )
 
 
-    current_image_path = (
-        get_image_path(
-            item.image_url
-        )
-    )
-
-
-    if (
-        not current_image_path
-        or not os.path.exists(
-            current_image_path
-        )
-    ):
-
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Current item image not found"
-            ),
-        )
-
-
     # ========================================================
-    # OPPOSITE ITEM TYPE
+    # GET CURRENT IMAGE
     # ========================================================
 
-    opposite_type = (
-        "found"
-        if item.type == "lost"
-        else "lost"
-    )
+    current_image_path = None
+
+    temporary_files = []
 
 
-    # ========================================================
-    # FIND VERIFIED CANDIDATES
-    # ========================================================
-
-    candidates = (
-        db.query(Item)
-        .filter(
-            Item.type ==
-            opposite_type,
-
-            Item.admin_verified ==
-            True,
-
-            Item.status ==
-            "active",
-
-            Item.id !=
-            item.id,
-        )
-        .all()
-    )
-
-
-    if not candidates:
-
-        return {
-            "message": (
-                "No verified opposite-type "
-                "items available for matching."
-            ),
-
-            "item_id":
-                item.id,
-
-            "matches_found":
-                0,
-
-            "threshold":
-                MATCH_THRESHOLD,
-
-            "matches":
-                [],
-        }
-
-
-    # ========================================================
-    # COMPARE AGAINST CANDIDATES
-    # ========================================================
-
-    matches = []
-
-
-    for candidate in candidates:
-
-        # ----------------------------------------------------
-        # Candidate image check
-        # ----------------------------------------------------
-
-        if not candidate.image_url:
-            continue
-
-
-        candidate_path = (
-            get_image_path(
-                candidate.image_url
-            )
-        )
-
-
-        if (
-            not candidate_path
-            or not os.path.exists(
-                candidate_path
-            )
-        ):
-            continue
-
-
-        # ----------------------------------------------------
-        # Gemini image comparison
-        # ----------------------------------------------------
+    try:
 
         try:
 
-            result = compare_images(
-                current_image_path,
-                candidate_path,
-            )
-
-
-            similarity = float(
-                result.get(
-                    "similarity_score",
-                    0,
+            current_image_path = (
+                get_ai_image_path(
+                    item.image_url
                 )
             )
-
-
-            match_reason = result.get(
-                "reason",
-                "Gemini detected visual similarity.",
-            )
-
 
         except Exception as error:
 
             print(
-                "AI matching error for "
-                f"item {candidate.id}: "
-                f"{error}"
+                "Current image download error:",
+                error,
             )
 
-            continue
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Could not download "
+                    "current item image."
+                ),
+            )
+
+
+        if not current_image_path:
+
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Current item image not found."
+                ),
+            )
 
 
         # ----------------------------------------------------
-        # Match threshold
+        # Track temporary Cloudinary file
         # ----------------------------------------------------
 
         if (
-            similarity >=
-            MATCH_THRESHOLD
+            item.image_url.startswith(
+                "http://"
+            )
+            or item.image_url.startswith(
+                "https://"
+            )
         ):
 
-            matches.append(
-                (
-                    candidate,
-                    similarity,
-                    match_reason,
-                )
+            temporary_files.append(
+                current_image_path
             )
 
 
-    # ========================================================
-    # SORT BEST MATCH FIRST
-    # ========================================================
+        # ====================================================
+        # OPPOSITE ITEM TYPE
+        # ====================================================
 
-    matches.sort(
-        key=lambda x: x[1],
-        reverse=True,
-    )
-
-
-    matches = matches[
-        :MAX_MATCHES
-    ]
-
-
-    # ========================================================
-    # SAVE MATCHES + NOTIFICATIONS
-    # ========================================================
-
-    response_matches = []
-
-
-    for (
-        candidate,
-        similarity,
-        match_reason,
-    ) in matches:
-
-        # ----------------------------------------------------
-        # CHECK EXISTING MATCH
-        # ----------------------------------------------------
-
-        existing_match = (
-            db.query(AIMatch)
-            .filter(
-                AIMatch.item_id ==
-                item.id,
-
-                AIMatch.matched_item_id ==
-                candidate.id,
-            )
-            .first()
+        opposite_type = (
+            "found"
+            if item.type == "lost"
+            else "lost"
         )
 
 
-        # ----------------------------------------------------
-        # CREATE NEW MATCH
-        # ----------------------------------------------------
+        # ====================================================
+        # FIND VERIFIED CANDIDATES
+        # ====================================================
 
-        if not existing_match:
+        candidates = (
+            db.query(Item)
+            .filter(
 
-            new_match = AIMatch(
+                Item.type ==
+                opposite_type,
 
-                item_id=
+                Item.admin_verified ==
+                True,
+
+                Item.status ==
+                "active",
+
+                Item.id !=
+                item.id,
+            )
+            .all()
+        )
+
+
+        if not candidates:
+
+            return {
+
+                "message": (
+                    "No verified opposite-type "
+                    "items available for matching."
+                ),
+
+                "item_id":
                     item.id,
 
-                matched_item_id=
-                    candidate.id,
+                "matches_found":
+                    0,
 
-                similarity_score=
-                    similarity,
+                "threshold":
+                    MATCH_THRESHOLD,
 
-                status=
-                    "notified",
-
-                match_reason=
-                    match_reason,
-            )
+                "matches":
+                    [],
+            }
 
 
-            db.add(
-                new_match
-            )
+        # ====================================================
+        # COMPARE AGAINST CANDIDATES
+        # ====================================================
+
+        matches = []
 
 
-            # =================================================
-            # NOTIFY CURRENT ITEM OWNER
-            # =================================================
+        for candidate in candidates:
 
-            db.add(
-                Notification(
+            # ------------------------------------------------
+            # Candidate image check
+            # ------------------------------------------------
 
-                    user_id=
-                        item.user_id,
+            if not candidate.image_url:
 
-                    # Open matched candidate item
-                    item_id=
-                        candidate.id,
+                continue
 
-                    message=(
-                        "🤖 AI found a "
-                        "possible match for "
-                        f"your {item.type} item "
-                        f"'{item.title}'. "
-                        f"Similarity: "
-                        f"{similarity * 100:.1f}%."
-                    ),
 
-                    is_read=False,
+            candidate_path = None
+
+
+            try:
+
+                candidate_path = (
+                    get_ai_image_path(
+                        candidate.image_url
+                    )
                 )
-            )
+
+            except Exception as error:
+
+                print(
+                    "Candidate image download error "
+                    f"for item {candidate.id}:",
+                    error,
+                )
+
+                continue
 
 
-            # =================================================
-            # NOTIFY MATCHED ITEM OWNER
-            # =================================================
+            if not candidate_path:
+
+                continue
+
+
+            # ------------------------------------------------
+            # Track temporary candidate image
+            # ------------------------------------------------
 
             if (
-                candidate.user_id
-                != item.user_id
+                candidate.image_url.startswith(
+                    "http://"
+                )
+                or candidate.image_url.startswith(
+                    "https://"
+                )
             ):
+
+                temporary_files.append(
+                    candidate_path
+                )
+
+
+            # ------------------------------------------------
+            # Gemini comparison
+            # ------------------------------------------------
+
+            try:
+
+                result = compare_images(
+
+                    current_image_path,
+
+                    candidate_path,
+                )
+
+
+                similarity = float(
+                    result.get(
+                        "similarity_score",
+                        0,
+                    )
+                )
+
+
+                match_reason = result.get(
+                    "reason",
+                    "Gemini detected visual similarity.",
+                )
+
+
+            except Exception as error:
+
+                print(
+                    "AI matching error for "
+                    f"item {candidate.id}: "
+                    f"{error}"
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # Threshold
+            # ------------------------------------------------
+
+            if (
+                similarity >=
+                MATCH_THRESHOLD
+            ):
+
+                matches.append(
+                    (
+                        candidate,
+                        similarity,
+                        match_reason,
+                    )
+                )
+
+
+        # ====================================================
+        # SORT BEST MATCH FIRST
+        # ====================================================
+
+        matches.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+
+        matches = matches[
+            :MAX_MATCHES
+        ]
+
+
+        # ====================================================
+        # SAVE MATCHES + NOTIFICATIONS
+        # ====================================================
+
+        response_matches = []
+
+
+        for (
+            candidate,
+            similarity,
+            match_reason,
+        ) in matches:
+
+            # ------------------------------------------------
+            # CHECK EXISTING MATCH
+            # ------------------------------------------------
+
+            existing_match = (
+                db.query(AIMatch)
+                .filter(
+
+                    AIMatch.item_id ==
+                    item.id,
+
+                    AIMatch.matched_item_id ==
+                    candidate.id,
+                )
+                .first()
+            )
+
+
+            # ------------------------------------------------
+            # CREATE NEW MATCH
+            # ------------------------------------------------
+
+            if not existing_match:
+
+                new_match = AIMatch(
+
+                    item_id=
+                        item.id,
+
+                    matched_item_id=
+                        candidate.id,
+
+                    similarity_score=
+                        similarity,
+
+                    status=
+                        "notified",
+
+                    match_reason=
+                        match_reason,
+                )
+
+
+                db.add(
+                    new_match
+                )
+
+
+                # ============================================
+                # NOTIFY CURRENT ITEM OWNER
+                # ============================================
 
                 db.add(
                     Notification(
 
                         user_id=
-                            candidate.user_id,
+                            item.user_id,
 
-                        # Open original/current item
                         item_id=
-                            item.id,
+                            candidate.id,
 
                         message=(
                             "🤖 AI found a "
-                            "possible match "
-                            f"between your item "
-                            f"'{candidate.title}' "
-                            "and another "
-                            "ReFindX item. "
+                            "possible match for "
+                            f"your {item.type} item "
+                            f"'{item.title}'. "
                             f"Similarity: "
                             f"{similarity * 100:.1f}%."
                         ),
@@ -486,68 +679,117 @@ def match_item(
                 )
 
 
-        # ----------------------------------------------------
-        # RESPONSE DATA
-        # ----------------------------------------------------
+                # ============================================
+                # NOTIFY MATCHED ITEM OWNER
+                # ============================================
 
-        response_matches.append(
-            {
-                "item_id":
-                    item.id,
+                if (
+                    candidate.user_id
+                    != item.user_id
+                ):
 
-                "matched_item_id":
-                    candidate.id,
+                    db.add(
+                        Notification(
 
-                "matched_title":
-                    candidate.title,
+                            user_id=
+                                candidate.user_id,
 
-                "matched_type":
-                    candidate.type,
+                            item_id=
+                                item.id,
 
-                "similarity_score":
-                    round(
-                        similarity,
-                        4,
-                    ),
+                            message=(
+                                "🤖 AI found a "
+                                "possible match "
+                                f"between your item "
+                                f"'{candidate.title}' "
+                                "and another "
+                                "ReFindX item. "
+                                f"Similarity: "
+                                f"{similarity * 100:.1f}%."
+                            ),
 
-                "similarity_percentage":
-                    round(
-                        similarity * 100,
-                        2,
-                    ),
-
-                "match_reason":
-                    match_reason,
-            }
-        )
+                            is_read=False,
+                        )
+                    )
 
 
-    # ========================================================
-    # SAVE DATABASE CHANGES
-    # ========================================================
+            # ------------------------------------------------
+            # RESPONSE DATA
+            # ------------------------------------------------
 
-    db.commit()
+            response_matches.append(
+                {
+
+                    "item_id":
+                        item.id,
+
+                    "matched_item_id":
+                        candidate.id,
+
+                    "matched_title":
+                        candidate.title,
+
+                    "matched_type":
+                        candidate.type,
+
+                    "similarity_score":
+                        round(
+                            similarity,
+                            4,
+                        ),
+
+                    "similarity_percentage":
+                        round(
+                            similarity * 100,
+                            2,
+                        ),
+
+                    "match_reason":
+                        match_reason,
+                }
+            )
 
 
-    # ========================================================
-    # FINAL RESPONSE
-    # ========================================================
+        # ====================================================
+        # SAVE DATABASE CHANGES
+        # ====================================================
 
-    return {
-        "message":
-            "AI matching completed",
+        db.commit()
 
-        "item_id":
-            item.id,
 
-        "matches_found":
-            len(
-                response_matches
-            ),
+        # ====================================================
+        # FINAL RESPONSE
+        # ====================================================
 
-        "threshold":
-            MATCH_THRESHOLD,
+        return {
 
-        "matches":
-            response_matches,
-    }
+            "message":
+                "AI matching completed",
+
+            "item_id":
+                item.id,
+
+            "matches_found":
+                len(
+                    response_matches
+                ),
+
+            "threshold":
+                MATCH_THRESHOLD,
+
+            "matches":
+                response_matches,
+        }
+
+
+    finally:
+
+        # ====================================================
+        # CLEAN TEMPORARY CLOUDINARY FILES
+        # ====================================================
+
+        for temp_file in temporary_files:
+
+            cleanup_temp_file(
+                temp_file
+            )

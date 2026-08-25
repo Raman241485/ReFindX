@@ -3,6 +3,9 @@ import uuid
 from datetime import date
 from typing import Optional
 
+import cloudinary
+import cloudinary.uploader
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,16 +14,20 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.item import Item
 from app.models.user import User
+
 from app.utils.dependencies import (
     get_current_user,
     get_current_admin,
 )
+
+from app.utils.cloudinary_config import cloudinary
 
 
 # ============================================================
@@ -34,10 +41,8 @@ router = APIRouter(
 
 
 # ============================================================
-# IMAGE UPLOAD SETTINGS
+# IMAGE SETTINGS
 # ============================================================
-
-UPLOAD_DIR = "uploads"
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
@@ -48,24 +53,25 @@ ALLOWED_IMAGE_TYPES = {
 MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
-os.makedirs(
-    UPLOAD_DIR,
-    exist_ok=True,
-)
-
-
 # ============================================================
 # CREATE LOST / FOUND ITEM
 # ============================================================
 
 @router.post("/create")
 async def create_item(
+
     type: str = Form(...),
+
     title: str = Form(...),
+
     category: str = Form(...),
+
     description: str = Form(...),
+
     location: str = Form(...),
+
     date_lost_found: date = Form(...),
+
     image: UploadFile = File(...),
 
     current_user: User = Depends(
@@ -77,9 +83,9 @@ async def create_item(
     ),
 ):
 
-    # --------------------------------------------------------
-    # Clean input
-    # --------------------------------------------------------
+    # ========================================================
+    # CLEAN INPUT
+    # ========================================================
 
     type = type.strip().lower()
     title = title.strip()
@@ -87,9 +93,10 @@ async def create_item(
     description = description.strip()
     location = location.strip()
 
-    # --------------------------------------------------------
-    # Validate type
-    # --------------------------------------------------------
+
+    # ========================================================
+    # VALIDATE TYPE
+    # ========================================================
 
     if type not in [
         "lost",
@@ -98,12 +105,16 @@ async def create_item(
 
         raise HTTPException(
             status_code=400,
-            detail="Type must be either 'lost' or 'found'",
+            detail=(
+                "Type must be either "
+                "'lost' or 'found'"
+            ),
         )
 
-    # --------------------------------------------------------
-    # Validate fields
-    # --------------------------------------------------------
+
+    # ========================================================
+    # VALIDATE REQUIRED FIELDS
+    # ========================================================
 
     if not title:
 
@@ -112,12 +123,14 @@ async def create_item(
             detail="Title is required",
         )
 
+
     if not category:
 
         raise HTTPException(
             status_code=400,
             detail="Category is required",
         )
+
 
     if not description:
 
@@ -126,6 +139,7 @@ async def create_item(
             detail="Description is required",
         )
 
+
     if not location:
 
         raise HTTPException(
@@ -133,9 +147,10 @@ async def create_item(
             detail="Location is required",
         )
 
-    # --------------------------------------------------------
-    # Validate image type
-    # --------------------------------------------------------
+
+    # ========================================================
+    # VALIDATE IMAGE TYPE
+    # ========================================================
 
     if image.content_type not in ALLOWED_IMAGE_TYPES:
 
@@ -147,22 +162,27 @@ async def create_item(
             ),
         )
 
-    # --------------------------------------------------------
-    # Read image
-    # --------------------------------------------------------
+
+    # ========================================================
+    # READ IMAGE
+    # ========================================================
 
     image_data = await image.read()
 
-    # --------------------------------------------------------
-    # Validate image size
-    # --------------------------------------------------------
+
+    # ========================================================
+    # VALIDATE IMAGE SIZE
+    # ========================================================
 
     if len(image_data) > MAX_IMAGE_SIZE:
 
         raise HTTPException(
             status_code=400,
-            detail="Image size must be less than 5 MB",
+            detail=(
+                "Image size must be less than 5 MB"
+            ),
         )
+
 
     if len(image_data) == 0:
 
@@ -171,9 +191,10 @@ async def create_item(
             detail="Uploaded image is empty",
         )
 
-    # --------------------------------------------------------
-    # Validate extension
-    # --------------------------------------------------------
+
+    # ========================================================
+    # VALIDATE EXTENSION
+    # ========================================================
 
     original_filename = (
         image.filename or ""
@@ -183,12 +204,14 @@ async def create_item(
         original_filename
     )[1].lower()
 
+
     allowed_extensions = {
         ".jpg",
         ".jpeg",
         ".png",
         ".webp",
     }
+
 
     if extension not in allowed_extensions:
 
@@ -197,51 +220,75 @@ async def create_item(
             detail="Invalid image extension",
         )
 
-    # --------------------------------------------------------
-    # Generate unique filename
-    # --------------------------------------------------------
 
-    filename = (
-        f"{uuid.uuid4()}"
-        f"{extension}"
+    # ========================================================
+    # CLOUDINARY PUBLIC ID
+    # ========================================================
+
+    public_id = (
+        f"refindx/items/"
+        f"{uuid.uuid4().hex}"
     )
 
-    file_path = os.path.join(
-        UPLOAD_DIR,
-        filename,
-    )
 
-    # --------------------------------------------------------
-    # Save image
-    # --------------------------------------------------------
+    # ========================================================
+    # UPLOAD IMAGE TO CLOUDINARY
+    # ========================================================
+
+    image_url = None
 
     try:
 
-        with open(
-            file_path,
-            "wb",
-        ) as file:
+        upload_result = (
+            cloudinary.uploader.upload(
+                image_data,
 
-            file.write(
-                image_data
+                public_id=public_id,
+
+                resource_type="image",
+
+                overwrite=False,
+            )
+        )
+
+
+        image_url = upload_result.get(
+            "secure_url"
+        )
+
+
+        if not image_url:
+
+            raise Exception(
+                "Cloudinary did not return "
+                "a secure image URL."
             )
 
+
     except Exception as error:
+
+        print(
+            "CLOUDINARY UPLOAD ERROR:",
+            error,
+        )
 
         raise HTTPException(
             status_code=500,
             detail=(
-                f"Could not save image: {error}"
+                "Could not upload image. "
+                "Please try again."
             ),
         )
 
-    # --------------------------------------------------------
-    # Create database item
-    # --------------------------------------------------------
+
+    # ========================================================
+    # CREATE DATABASE ITEM
+    # ========================================================
 
     try:
 
         new_item = Item(
+
             user_id=current_user.id,
 
             type=type,
@@ -252,20 +299,17 @@ async def create_item(
 
             description=description,
 
-            image_url=(
-                f"/uploads/{filename}"
-            ),
+            image_url=image_url,
 
             location=location,
 
-            date_lost_found=(
-                date_lost_found
-            ),
+            date_lost_found=date_lost_found,
 
             status="active",
 
             admin_verified=False,
         )
+
 
         db.add(
             new_item
@@ -277,17 +321,30 @@ async def create_item(
             new_item
         )
 
+
     except Exception as error:
 
         db.rollback()
 
-        if os.path.exists(
-            file_path
-        ):
 
-            os.remove(
-                file_path
+        # ----------------------------------------------------
+        # Try to remove Cloudinary image if DB creation fails
+        # ----------------------------------------------------
+
+        try:
+
+            cloudinary.uploader.destroy(
+                public_id,
+                resource_type="image",
             )
+
+        except Exception as cleanup_error:
+
+            print(
+                "CLOUDINARY CLEANUP ERROR:",
+                cleanup_error,
+            )
+
 
         raise HTTPException(
             status_code=500,
@@ -296,31 +353,50 @@ async def create_item(
             ),
         )
 
-    # --------------------------------------------------------
-    # Response
-    # --------------------------------------------------------
+
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
-        "message": (
-            "Item submitted successfully"
-        ),
+
+        "message":
+            "Item submitted successfully",
 
         "item": {
-            "id": new_item.id,
-            "user_id": new_item.user_id,
-            "type": new_item.type,
-            "title": new_item.title,
-            "category": new_item.category,
-            "description": new_item.description,
-            "image_url": new_item.image_url,
-            "location": new_item.location,
-            "date_lost_found": (
-                new_item.date_lost_found
-            ),
-            "status": new_item.status,
-            "admin_verified": (
-                new_item.admin_verified
-            ),
+
+            "id":
+                new_item.id,
+
+            "user_id":
+                new_item.user_id,
+
+            "type":
+                new_item.type,
+
+            "title":
+                new_item.title,
+
+            "category":
+                new_item.category,
+
+            "description":
+                new_item.description,
+
+            "image_url":
+                new_item.image_url,
+
+            "location":
+                new_item.location,
+
+            "date_lost_found":
+                new_item.date_lost_found,
+
+            "status":
+                new_item.status,
+
+            "admin_verified":
+                new_item.admin_verified,
         },
     }
 
@@ -331,9 +407,13 @@ async def create_item(
 
 @router.get("/")
 def get_items(
+
     search: Optional[str] = None,
+
     category: Optional[str] = None,
+
     type: Optional[str] = None,
+
     location: Optional[str] = None,
 
     db: Session = Depends(
@@ -341,20 +421,23 @@ def get_items(
     ),
 ):
 
-    query = db.query(
-        Item
-    ).filter(
-        Item.admin_verified == True,
-        Item.status != "returned",
+    query = (
+        db.query(Item)
+        .filter(
+            Item.admin_verified == True,
+            Item.status != "returned",
+        )
     )
 
-    # --------------------------------------------------------
-    # Search
-    # --------------------------------------------------------
+
+    # ========================================================
+    # SEARCH
+    # ========================================================
 
     if search:
 
         search = search.strip()
+
 
         if search:
 
@@ -362,8 +445,11 @@ def get_items(
                 f"%{search}%"
             )
 
+
             query = query.filter(
+
                 or_(
+
                     Item.title.ilike(
                         search_term
                     ),
@@ -382,13 +468,15 @@ def get_items(
                 )
             )
 
-    # --------------------------------------------------------
-    # Category
-    # --------------------------------------------------------
+
+    # ========================================================
+    # CATEGORY
+    # ========================================================
 
     if category:
 
         category = category.strip()
+
 
         if category:
 
@@ -398,13 +486,15 @@ def get_items(
                 )
             )
 
-    # --------------------------------------------------------
-    # Type
-    # --------------------------------------------------------
+
+    # ========================================================
+    # TYPE
+    # ========================================================
 
     if type:
 
         type = type.strip().lower()
+
 
         if type not in [
             "lost",
@@ -419,17 +509,20 @@ def get_items(
                 ),
             )
 
+
         query = query.filter(
             Item.type == type
         )
 
-    # --------------------------------------------------------
-    # Location
-    # --------------------------------------------------------
+
+    # ========================================================
+    # LOCATION
+    # ========================================================
 
     if location:
 
         location = location.strip()
+
 
         if location:
 
@@ -439,13 +532,19 @@ def get_items(
                 )
             )
 
-    # --------------------------------------------------------
-    # Latest first
-    # --------------------------------------------------------
 
-    items = query.order_by(
-        Item.created_at.desc()
-    ).all()
+    # ========================================================
+    # LATEST FIRST
+    # ========================================================
+
+    items = (
+        query
+        .order_by(
+            Item.created_at.desc()
+        )
+        .all()
+    )
+
 
     return items
 
@@ -456,6 +555,7 @@ def get_items(
 
 @router.get("/{item_id}")
 def get_item(
+
     item_id: int,
 
     db: Session = Depends(
@@ -463,13 +563,18 @@ def get_item(
     ),
 ):
 
-    item = db.query(
-        Item
-    ).filter(
-        Item.id == item_id,
-        Item.admin_verified == True,
-        Item.status != "returned",
-    ).first()
+    item = (
+        db.query(Item)
+        .filter(
+            Item.id == item_id,
+
+            Item.admin_verified == True,
+
+            Item.status != "returned",
+        )
+        .first()
+    )
+
 
     if not item:
 
@@ -478,6 +583,7 @@ def get_item(
             detail="Item not found",
         )
 
+
     return item
 
 
@@ -485,10 +591,9 @@ def get_item(
 # ADMIN DELETE ITEM
 # ============================================================
 
-@router.delete(
-    "/{item_id}"
-)
+@router.delete("/{item_id}")
 def delete_item(
+
     item_id: int,
 
     current_admin: User = Depends(
@@ -500,15 +605,18 @@ def delete_item(
     ),
 ):
 
-    # --------------------------------------------------------
-    # Find item
-    # --------------------------------------------------------
+    # ========================================================
+    # FIND ITEM
+    # ========================================================
 
-    item = db.query(
-        Item
-    ).filter(
-        Item.id == item_id
-    ).first()
+    item = (
+        db.query(Item)
+        .filter(
+            Item.id == item_id
+        )
+        .first()
+    )
+
 
     if not item:
 
@@ -517,24 +625,84 @@ def delete_item(
             detail="Item not found",
         )
 
-    # --------------------------------------------------------
-    # Save image path before deleting DB record
-    # --------------------------------------------------------
 
-    image_path = None
+    # ========================================================
+    # DELETE CLOUDINARY IMAGE
+    # ========================================================
 
     if item.image_url:
 
-        clean_path = (
-            item.image_url
-            .lstrip("/")
-        )
+        try:
 
-        image_path = clean_path
+            image_url = item.image_url
 
-    # --------------------------------------------------------
-    # Delete item
-    # --------------------------------------------------------
+            # Example:
+            # https://res.cloudinary.com/
+            # cloud/image/upload/v123/
+            # refindx/items/abc.jpg
+
+            if (
+                "res.cloudinary.com"
+                in image_url
+                and "/upload/" in image_url
+            ):
+
+                cloudinary_path = (
+                    image_url.split(
+                        "/upload/",
+                        1,
+                    )[1]
+                )
+
+
+                # Remove version segment:
+                # v123456789/
+                parts = (
+                    cloudinary_path
+                    .split("/")
+                )
+
+
+                if (
+                    parts
+                    and parts[0].startswith("v")
+                    and parts[0][1:].isdigit()
+                ):
+
+                    parts = parts[1:]
+
+
+                public_id_with_extension = (
+                    "/".join(parts)
+                )
+
+
+                public_id_to_delete = (
+                    os.path.splitext(
+                        public_id_with_extension
+                    )[0]
+                )
+
+
+                cloudinary.uploader.destroy(
+
+                    public_id_to_delete,
+
+                    resource_type="image",
+                )
+
+
+        except Exception as error:
+
+            print(
+                "CLOUDINARY DELETE ERROR:",
+                error,
+            )
+
+
+    # ========================================================
+    # DELETE DATABASE ITEM
+    # ========================================================
 
     try:
 
@@ -544,9 +712,11 @@ def delete_item(
 
         db.commit()
 
+
     except Exception as error:
 
         db.rollback()
+
 
         raise HTTPException(
             status_code=500,
@@ -555,45 +725,25 @@ def delete_item(
             ),
         )
 
-    # --------------------------------------------------------
-    # Delete uploaded image
-    # --------------------------------------------------------
 
-    if image_path:
-
-        try:
-
-            if os.path.exists(
-                image_path
-            ):
-
-                os.remove(
-                    image_path
-                )
-
-        except Exception as error:
-
-            # Item already deleted from DB.
-            # Image cleanup failure should not
-            # make the delete request fail.
-            print(
-                "Could not delete item image:",
-                error,
-            )
-
-    # --------------------------------------------------------
-    # Response
-    # --------------------------------------------------------
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
-        "message": (
-            "Item deleted successfully"
-        ),
 
-        "item_id": item_id,
+        "message":
+            "Item deleted successfully",
+
+        "item_id":
+            item_id,
 
         "deleted_by": {
-            "admin_id": current_admin.id,
-            "admin_name": current_admin.name,
+
+            "admin_id":
+                current_admin.id,
+
+            "admin_name":
+                current_admin.name,
         },
     }

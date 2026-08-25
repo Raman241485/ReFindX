@@ -501,10 +501,13 @@ function Home() {
 // ============================================================
 
 function ItemCard({ item }) {
-  const imageUrl =
-    item.image_url
-    ?
-    `https://refindx.onrender.com${item.image_url}`
+ const imageUrl =
+  item.image_url
+    ? (
+        item.image_url.startsWith("http")
+          ? item.image_url
+          : `https://refindx.onrender.com${item.image_url}`
+      )
     : null;
 
   return (
@@ -1308,11 +1311,13 @@ function ItemDetails({ user }) {
   // ==========================================================
   // IMAGE URL
   // ==========================================================
-
-  const imageUrl =
+const imageUrl =
   item.image_url
-    ?
-    `https://refindx.onrender.com${item.image_url}`
+    ? (
+        item.image_url.startsWith("http")
+          ? item.image_url
+          : `https://refindx.onrender.com${item.image_url}`
+      )
     : null;
 
 
@@ -1680,11 +1685,9 @@ function ItemDetails({ user }) {
 
 
               <p>
-                Find verified opposite-type
-                items with similar images
-                using CLIP AI.
-              </p>
-
+  Find verified opposite-type items with similar images
+  using Gemini AI.
+</p>
 
               {/* AI MESSAGE */}
 
@@ -4593,11 +4596,14 @@ function AdminDashboard({ user }) {
             {pendingItems.map(
               (item) => {
 
-                const imageUrl =
-                  item.image_url
-                    ? `https://refindx.onrender.com${item.image_url}`
-                    : null;
-
+              const imageUrl =
+  item.image_url
+    ? (
+        item.image_url.startsWith("http")
+          ? item.image_url
+          : `https://refindx.onrender.com${item.image_url}`
+      )
+    : null;
 
                 return (
 
