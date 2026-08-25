@@ -514,7 +514,17 @@ def delete_item(
         synchronize_session=False
     )
 
+# --------------------------------------------------------
+# DELETE NOTIFICATIONS RELATED TO ITEM
+# --------------------------------------------------------
 
+    db.query(
+    Notification
+        ).filter(
+    Notification.item_id == item.id
+    ).delete(
+    synchronize_session=False
+    )
     # --------------------------------------------------------
     # DELETE ITEM
     # --------------------------------------------------------
