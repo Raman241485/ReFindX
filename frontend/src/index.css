@@ -5434,3 +5434,10 @@ body.dark-mode .claim-box .error-message {
   background: #421c25 !important;
   color: #ff9da8 !important;
 }
+
+.email-disclaimer {
+  margin: -5px 0 15px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #666;
+}

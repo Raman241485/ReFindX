@@ -71,7 +71,7 @@ OTP_EXPIRY_MINUTES = 5
     "/signup",
     response_model=SignupResponse,
 )
-async def signup(
+def signup(
     user_data: UserSignup,
     db: Session = Depends(get_db),
 ):
@@ -111,21 +111,6 @@ async def signup(
         )
 
     # --------------------------------------------------------
-    # GENERATE OTP
-    # --------------------------------------------------------
-
-    otp_code = str(
-        secrets.randbelow(900000) + 100000
-    )
-
-    otp_expires_at = (
-        datetime.now(timezone.utc)
-        + timedelta(
-            minutes=OTP_EXPIRY_MINUTES
-        )
-    )
-
-    # --------------------------------------------------------
     # CREATE USER
     # --------------------------------------------------------
 
@@ -141,13 +126,13 @@ async def signup(
 
         role="user",
 
-        # IMPORTANT:
-        # User is NOT verified until OTP is correct.
-        email_verified=False,
+        # Email verification is disabled.
+        # User can login immediately after signup.
+        email_verified=True,
 
-        otp_code=otp_code,
+        otp_code=None,
 
-        otp_expires_at=otp_expires_at,
+        otp_expires_at=None,
 
     )
 
@@ -158,36 +143,6 @@ async def signup(
     db.refresh(new_user)
 
     # --------------------------------------------------------
-    # SEND OTP EMAIL
-    # --------------------------------------------------------
-
-    try:
-
-        await send_email_otp(
-            receiver_email=new_user.email,
-            otp_code=otp_code,
-        )
-
-    except Exception as error:
-
-        # Remove user if email could not be sent.
-        db.delete(new_user)
-        db.commit()
-
-        print(
-            "SIGNUP OTP EMAIL ERROR:",
-            str(error),
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not send verification email. "
-                "Please try again."
-            ),
-        )
-
-    # --------------------------------------------------------
     # SIGNUP SUCCESS
     # --------------------------------------------------------
 
@@ -195,13 +150,12 @@ async def signup(
 
         "message": (
             "Account created successfully. "
-            "Please verify your email using the OTP "
-            "sent to your email address."
+            "You can now login."
         ),
 
         "email": new_user.email,
 
-        "requires_verification": True,
+        "requires_verification": False,
 
     }
 

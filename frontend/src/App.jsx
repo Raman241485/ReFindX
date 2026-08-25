@@ -2461,26 +2461,7 @@ function Signup({ setUser }) {
       // OTP REQUIRED
       // ------------------------------------------------------
 
-      if (
-        response.data.requires_verification
-      ) {
-
-        setOtpMode(true);
-
-        setSuccess(
-          response.data.message ||
-          "OTP sent to your email."
-        );
-
-        // 5 minutes
-        setSecondsLeft(300);
-
-      } else {
-
-        navigate("/login");
-
-      }
-
+     navigate("/login");
 
     } catch (error) {
 
@@ -2895,7 +2876,11 @@ function Signup({ setUser }) {
           }
           required
         />
-
+<p className="email-disclaimer">
+  Please use your official and valid email address.
+  Your email may be used for account-related
+  communication and password recovery.
+</p>
 
         <label>
           Password
