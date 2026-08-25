@@ -1226,7 +1226,7 @@ function ItemDetails({ user }) {
 
       setContactSuccess(
         response.data.message ||
-        "Email sent successfully."
+        "Message sent successfully."
       );
 
 
@@ -1251,7 +1251,7 @@ function ItemDetails({ user }) {
 
       setContactError(
         error.response?.data?.detail ||
-        "Could not send email."
+        "Could not send message.  Please try again."
       );
 
     } finally {
@@ -1520,17 +1520,16 @@ function ItemDetails({ user }) {
             >
 
               <h2>
-                📧 Contact Finder
+              📩 Contact Finder
               </h2>
 
 
-              <p>
-                Did you lose this item?
-                Send a message to the person
-                who found it. Your message
-                will be delivered to their
-                registered email.
-              </p>
+  <p>
+  Did you lose this item?
+  Send a message to the person who found it.
+  Please include your contact number in the message
+  so the finder can contact you directly.
+</p>
 
 
               {/* ----------------------------------------------
@@ -1622,9 +1621,8 @@ function ItemDetails({ user }) {
                   >
 
                     {contactLoading
-                      ? "📧 Sending..."
-                      : "📧 Send Email"}
-
+  ? "📩 Sending..."
+  : "📩 Send Message"}
                   </button>
 
 
