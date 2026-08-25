@@ -501,12 +501,11 @@ function Home() {
 // ============================================================
 
 function ItemCard({ item }) {
-
   const imageUrl =
     item.image_url
-      ? `http://127.0.0.1:8000${item.image_url}`
-      : null;
-
+    ?
+    `https://refindx.onrender.com${item.image_url}`
+    : null;
 
   return (
 
@@ -1311,9 +1310,10 @@ function ItemDetails({ user }) {
   // ==========================================================
 
   const imageUrl =
-    item.image_url
-      ? `http://127.0.0.1:8000${item.image_url}`
-      : null;
+  item.image_url
+    ?
+    `https://refindx.onrender.com${item.image_url}`
+    : null;
 
 
   // ==========================================================
@@ -4597,7 +4597,7 @@ function AdminDashboard({ user }) {
 
                 const imageUrl =
                   item.image_url
-                    ? `http://127.0.0.1:8000${item.image_url}`
+                    ? `https://refindx.onrender.com${item.image_url}`
                     : null;
 
 
