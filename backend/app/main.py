@@ -12,6 +12,8 @@ from app.models import (
     Claim,
     Notification,
     AIMatch,
+    PushSubscription,
+
 )
 
 from app.routes.auth import router as auth_router
@@ -30,6 +32,7 @@ from app.routes.ai import (
 from app.routes import contact
 from app.routes.chatbot import router as chatbot_router
 # from fastapi.middleware.cors import CORSMiddleware
+from app.routes.push import router as push_router
 
 Base.metadata.create_all(
     bind=engine
@@ -92,6 +95,7 @@ app.include_router(admin_router)
 app.include_router(items_router)
 app.include_router(claims_router)
 app.include_router(notifications_router)
+app.include_router(push_router)
 app.include_router(realtime_router)
 app.include_router(ai_router)
 app.include_router(

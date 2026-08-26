@@ -140,7 +140,11 @@ function Navbar({
         {/* ==================================================
             DARK MODE SWITCH
             ================================================== */}
-
+           {user && (
+  <EnableNotificationsButton
+    user={user}
+  />
+)}
         <button
           type="button"
           className={`theme-switch ${
@@ -225,6 +229,250 @@ function Navbar({
 
   );
 }
+// ============================================================
+// ENABLE PUSH NOTIFICATIONS
+// ============================================================
+
+function EnableNotificationsButton({ user }) {
+
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+
+  const enableNotifications = async () => {
+
+    try {
+
+      setLoading(true);
+      setStatus("");
+
+      if (!user) {
+        setStatus("Please login first.");
+        return;
+      }
+
+      if (!("serviceWorker" in navigator)) {
+        setStatus("Service Worker is not supported.");
+        return;
+      }
+
+      if (!("PushManager" in window)) {
+        setStatus("Push notifications are not supported.");
+        return;
+      }
+
+      if (!("Notification" in window)) {
+        setStatus("Browser notifications are not supported.");
+        return;
+      }
+
+      await navigator.serviceWorker.register("/sw.js");
+
+      const registration =
+        await navigator.serviceWorker.ready;
+
+      console.log(
+        "Service Worker ready:",
+        registration
+      );
+
+      let permission =
+        Notification.permission;
+
+      if (permission === "default") {
+        permission =
+          await Notification.requestPermission();
+      }
+
+      console.log(
+        "Notification permission:",
+        permission
+      );
+
+      if (permission !== "granted") {
+        setStatus(
+          "Notification permission was not granted."
+        );
+        return;
+      }
+
+      const publicKey =
+        import.meta.env.VITE_VAPID_PUBLIC_KEY;
+
+      console.log(
+        "VAPID KEY LENGTH:",
+        publicKey?.length
+      );
+
+      if (!publicKey) {
+        setStatus(
+          "VAPID public key is missing."
+        );
+        return;
+      }
+
+      const urlBase64ToUint8Array =
+        (base64String) => {
+
+          const padding =
+            "=".repeat(
+              (4 -
+                (base64String.length % 4)) %
+                4
+            );
+
+          const base64 =
+            (
+              base64String +
+              padding
+            )
+              .replace(/-/g, "+")
+              .replace(/_/g, "/");
+
+          const rawData =
+            window.atob(base64);
+
+          return Uint8Array.from(
+            [...rawData].map(
+              (char) =>
+                char.charCodeAt(0)
+            )
+          );
+        };
+
+      const applicationServerKey =
+        urlBase64ToUint8Array(
+          publicKey
+        );
+
+      console.log(
+        "VAPID KEY BYTES:",
+        applicationServerKey.length
+      );
+
+      let subscription =
+        await registration.pushManager.getSubscription();
+
+      if (!subscription) {
+
+        console.log(
+          "Creating new push subscription..."
+        );
+subscription =
+  await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey:
+      applicationServerKey,
+  });
+        console.log(
+          "Push subscription created:",
+          subscription
+        );
+
+      } else {
+
+        console.log(
+          "Existing push subscription found."
+        );
+
+      }
+
+      const subscriptionJson =
+        subscription.toJSON();
+
+      if (
+        !subscriptionJson.endpoint ||
+        !subscriptionJson.keys
+      ) {
+        setStatus(
+          "Invalid push subscription."
+        );
+        return;
+      }
+
+      console.log(
+        "Saving push subscription..."
+      );
+
+      const response =
+        await API.post(
+          "/api/push/subscribe",
+          {
+            endpoint:
+              subscriptionJson.endpoint,
+
+            p256dh:
+              subscriptionJson.keys.p256dh,
+
+            auth:
+              subscriptionJson.keys.auth,
+          }
+        );
+
+      console.log(
+        "Push subscription saved:",
+        response.data
+      );
+
+      setStatus(
+        "Notifications enabled successfully! 🔔"
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Push notification setup failed:",
+        error
+      );
+
+      setStatus(
+        error.message ||
+        "Could not enable notifications."
+      );
+
+    } finally {
+
+      setLoading(false);
+
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+      }}
+    >
+
+      <button
+        type="button"
+        className="secondary-btn"
+        onClick={enableNotifications}
+        disabled={loading}
+        title="Enable ReFindX notifications"
+      >
+        {loading
+          ? "🔄 Enabling..."
+          : "🔔 Enable Notifications"}
+      </button>
+
+      {status && (
+        <span
+          style={{
+            fontSize: "12px",
+            maxWidth: "220px",
+          }}
+        >
+          {status}
+        </span>
+      )}
+
+    </div>
+  );
+}
+
+
 // ============================================================
 // HOME
 // ============================================================
@@ -5154,6 +5402,7 @@ function App() {
     }
 
   }, [darkMode]);
+
 
 
   return (
