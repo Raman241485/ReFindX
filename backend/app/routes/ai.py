@@ -17,6 +17,8 @@ from app.models.item import Item
 from app.models.user import User
 from app.models.notification import Notification
 from app.models.ai_match import AIMatch
+from app.utils.push import send_push_notification
+from app.models.push_subscription import PushSubscription
 
 from app.utils.dependencies import get_current_user
 
@@ -650,33 +652,64 @@ def match_item(
                 db.add(
                     new_match
                 )
-
-
-                # ============================================
+                            # ============================================
                 # NOTIFY CURRENT ITEM OWNER
                 # ============================================
 
-                db.add(
-                    Notification(
+                notification = Notification(
 
-                        user_id=
-                            item.user_id,
+                    user_id=item.user_id,
 
-                        item_id=
-                            candidate.id,
+                    item_id=candidate.id,
 
-                        message=(
-                            "🤖 AI found a "
-                            "possible match for "
-                            f"your {item.type} item "
-                            f"'{item.title}'. "
-                            f"Similarity: "
-                            f"{similarity * 100:.1f}%."
-                        ),
+                    message=(
+                        "🤖 AI found a "
+                        "possible match for "
+                        f"your {item.type} item "
+                        f"'{item.title}'. "
+                        f"Similarity: "
+                        f"{similarity * 100:.1f}%."
+                    ),
 
-                        is_read=False,
-                    )
+                    is_read=False,
                 )
+
+                db.add(notification)
+
+                # Get notification ID
+                db.flush()
+
+
+                # Find all devices/browsers
+                # registered by current item owner
+                subscriptions = (
+                    db.query(
+                        PushSubscription
+                    )
+                    .filter(
+                        PushSubscription.user_id
+                        == item.user_id
+                    )
+                    .all()
+                )
+
+
+                # Send push notification
+                # to every registered device
+                for subscription in subscriptions:
+
+                    send_push_notification(
+
+                        subscription=subscription,
+
+                        message=notification.message,
+
+                        item_id=candidate.id,
+
+                        notification_id=notification.id,
+
+                        url="/notifications",
+                    )
 
 
                 # ============================================
@@ -688,30 +721,66 @@ def match_item(
                     != item.user_id
                 ):
 
-                    db.add(
-                        Notification(
+                    notification = Notification(
 
-                            user_id=
-                                candidate.user_id,
+                        user_id=
+                            candidate.user_id,
 
-                            item_id=
-                                item.id,
+                        item_id=
+                            item.id,
 
-                            message=(
-                                "🤖 AI found a "
-                                "possible match "
-                                f"between your item "
-                                f"'{candidate.title}' "
-                                "and another "
-                                "ReFindX item. "
-                                f"Similarity: "
-                                f"{similarity * 100:.1f}%."
-                            ),
+                        message=(
+                            "🤖 AI found a "
+                            "possible match "
+                            f"between your item "
+                            f"'{candidate.title}' "
+                            "and another "
+                            "ReFindX item. "
+                            f"Similarity: "
+                            f"{similarity * 100:.1f}%."
+                        ),
 
-                            is_read=False,
-                        )
+                        is_read=False,
                     )
 
+                    db.add(notification)
+
+                    # Get notification ID
+                    db.flush()
+
+
+                    # Find all devices/browsers
+                    # of matched item owner
+                    subscriptions = (
+                        db.query(
+                            PushSubscription
+                        )
+                        .filter(
+                            PushSubscription.user_id
+                            == candidate.user_id
+                        )
+                        .all()
+                    )
+
+
+                    # Send push notification
+                    # to every registered device
+                    for subscription in subscriptions:
+
+                        send_push_notification(
+
+                            subscription=subscription,
+
+                            message=
+                                notification.message,
+
+                            item_id=item.id,
+
+                            notification_id=
+                                notification.id,
+
+                            url="/notifications",
+                        )
 
             # ------------------------------------------------
             # RESPONSE DATA
